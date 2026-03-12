@@ -555,6 +555,7 @@ def score_candidate(
     bh, bw = crop.shape[:2]
     area_ratio = float((bw * bh) / max(1.0, h_img * w_img))
     aspect_ratio = float(bw / float(bh + 1e-6))
+    x_center_ratio = float(((x1 + x2) / 2.0) / max(1.0, w_img))
     y_center_ratio = float(((y1 + y2) / 2.0) / max(1.0, h_img))
 
     binaries = [
@@ -596,6 +597,10 @@ def score_candidate(
     contrast_score = triangle_pref(contrast_span, 0.08, 0.28, 0.75)
     ink_score = triangle_pref(best_ink_ratio, 0.02, 0.17, 0.42)
     component_score = min(1.0, best_components / 12.0)
+    x_position_score = max(
+        triangle_pref(x_center_ratio, 0.12, 0.50, 0.88),
+        triangle_pref(x_center_ratio, 0.18, 0.50, 0.80),
+    )
     position_score = max(
         triangle_pref(y_center_ratio, 0.16, 0.55, 0.82),
         triangle_pref(y_center_ratio, 0.20, 0.48, 0.74),
@@ -609,6 +614,14 @@ def score_candidate(
     if bh >= int(h_img * 0.22):
         bottom_overlay_penalty += 0.45
 
+    side_background_penalty = 0.0
+    if x1 >= int(w_img * 0.74) or x2 <= int(w_img * 0.26):
+        side_background_penalty += 0.9
+    if x1 >= int(w_img * 0.82) or x2 <= int(w_img * 0.18):
+        side_background_penalty += 0.95
+    if aspect_ratio < 0.82 and (x_center_ratio >= 0.76 or x_center_ratio <= 0.24):
+        side_background_penalty += 0.55
+
     score = (
         best_line_score * 2.0
         + component_score * 0.95
@@ -620,9 +633,11 @@ def score_candidate(
         + best_alignment * 0.25
         + best_consistency * 0.2
         + best_gap * 0.15
+        + x_position_score * 1.85
         + position_score * 0.45
         - glare_ratio * 0.85
         - bottom_overlay_penalty
+        - side_background_penalty
     )
     if aspect_ratio < 0.75:
         score -= 1.15
@@ -738,6 +753,21 @@ def tighten_candidate_box(
     return clip_box(tightened, image_shape)
 
 
+def maybe_tighten_candidate_box(
+    gray: np.ndarray,
+    box: Tuple[int, int, int, int],
+    image_shape: Sequence[int],
+    min_area_keep_ratio: float = 0.42,
+) -> Tuple[int, int, int, int]:
+    original = clip_box(box, image_shape)
+    tightened = tighten_candidate_box(gray, original, image_shape)
+    orig_area = max(1, (original[2] - original[0]) * (original[3] - original[1]))
+    tightened_area = max(1, (tightened[2] - tightened[0]) * (tightened[3] - tightened[1]))
+    if tightened_area < int(orig_area * min_area_keep_ratio):
+        return original
+    return tightened
+
+
 def craft_is_available() -> bool:
     return Crafter is not None
 
@@ -847,14 +877,16 @@ def build_grouped_boxes_from_raw(
             if boxes_are_related(seed, box):
                 group.append(box)
         if len(group) >= 2:
-            proposals.append(
-                (
-                    min(b[0] for b in group),
-                    min(b[1] for b in group),
-                    max(b[2] for b in group),
-                    max(b[3] for b in group),
-                )
+            merged = (
+                min(b[0] for b in group),
+                min(b[1] for b in group),
+                max(b[2] for b in group),
+                max(b[3] for b in group),
             )
+            merged_w = max(1, merged[2] - merged[0])
+            merged_h = max(1, merged[3] - merged[1])
+            if merged_w / float(merged_h) >= 0.58:
+                proposals.append(merged)
 
     return dedupe_boxes(proposals, iou_threshold=0.78)
 
@@ -877,6 +909,7 @@ def choose_best_date_cluster(
 
     best_box = scored[0].box
     best_score = scored[0].score
+    best_component_count = scored[0].component_count
 
     for item in scored[1:12]:
         if item.score < scored[0].score * 0.48:
@@ -890,9 +923,22 @@ def choose_best_date_cluster(
             continue
         if merged_score.aspect_ratio < 0.72:
             continue
-        if merged_score.score >= best_score * 0.84 or merged_score.score > best_score + 0.08:
+        component_gain = merged_score.component_count - max(
+            best_component_count,
+            item.component_count,
+        )
+        if (
+            merged_score.score >= best_score * 0.84
+            or merged_score.score > best_score + 0.08
+            or (
+                merged_score.score >= best_score * 0.78
+                and component_gain >= 4
+                and merged_score.area_ratio <= 0.08
+            )
+        ):
             best_box = merged
             best_score = max(best_score, merged_score.score)
+            best_component_count = max(best_component_count, merged_score.component_count)
 
     image_h = int(image_shape[0])
     for item in scored[1:10]:
@@ -913,7 +959,7 @@ def choose_best_date_cluster(
             best_box = merged
             best_score = max(best_score, merged_score.score)
 
-    best_box = tighten_candidate_box(gray, best_box, image_shape)
+    best_box = maybe_tighten_candidate_box(gray, best_box, image_shape)
     scored.append(score_candidate(best_box, gray, glare_mask, image_shape, source=f"{source}_final"))
     scored.sort(key=lambda item: item.score, reverse=True)
 
@@ -979,7 +1025,7 @@ def detect_text_roi(
         full = CropBox(0, 0, original_w, original_h)
         return full, False, 0, glare_ratio, [], 0.0, backend_used, fallback_used, craft_used
 
-    chosen_box = tighten_candidate_box(detection_gray, chosen_box, detection_image.shape)
+    chosen_box = maybe_tighten_candidate_box(detection_gray, chosen_box, detection_image.shape)
     scaled_box = scale_box(chosen_box, det_scale)
     scaled_box = clip_box(scaled_box, image.shape)
     crop = pad_box(scaled_box, image.shape, padding_ratio=padding_ratio)
