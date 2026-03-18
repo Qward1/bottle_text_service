@@ -87,32 +87,10 @@ def build_multipart_payload(images: list[tuple[str, str, bytes]]) -> tuple[bytes
     return body.getvalue(), boundary
 
 
-app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
-
-
-@app.get("/health")
-def health() -> dict:
-    return {"status": "ok"}
-
-
-@app.post("/process")
-async def process_endpoint(
-    request: Request,
-    file: UploadFile = File(..., description="Фото бутылки"),
-    response_format: Literal["multipart", "zip", "json_links"] = Query(
-        default="multipart",
-        description="Вернуть multipart с файлами, zip-архив или JSON-массив ссылок на изображения",
-    ),
-    crop_padding_ratio: float = Query(
-        default=0.08,
-        ge=0.0,
-        le=0.25,
-        description="Насколько расширять найденную область даты/маркировки",
-    ),
-    detector_backend: Literal["craft", "heuristic"] = Query(
-        default="craft",
-        description="Какой детектор использовать для поиска даты/кода",
-    ),
+async def process_upload(
+    file: UploadFile,
+    crop_padding_ratio: float,
+    detector_backend: Literal["craft", "heuristic"],
 ):
     if file.content_type and file.content_type.lower() not in ALLOWED_TYPES:
         raise HTTPException(status_code=415, detail=f"Неподдерживаемый тип файла: {file.content_type}")
@@ -134,7 +112,135 @@ async def process_endpoint(
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {exc}") from exc
 
-    images = build_output_images(content, result)
+    return content, build_output_images(content, result)
+
+
+def single_image_response(images: list[tuple[str, str, bytes]], filename: str) -> StreamingResponse:
+    for current_filename, media_type, payload in images:
+        if current_filename == filename:
+            headers = {"Content-Disposition": f'attachment; filename="{current_filename}"'}
+            return StreamingResponse(io.BytesIO(payload), media_type=media_type, headers=headers)
+    raise HTTPException(status_code=500, detail=f"Не удалось собрать файл: {filename}")
+
+
+app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/process1")
+async def process_crop_endpoint(
+    file: UploadFile = File(..., description="Фото бутылки"),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    _, images = await process_upload(file, crop_padding_ratio, detector_backend)
+    return single_image_response(images, "crop_preview.jpg")
+
+
+@app.post("/process2")
+async def process_improved_endpoint(
+    file: UploadFile = File(..., description="Фото бутылки"),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    _, images = await process_upload(file, crop_padding_ratio, detector_backend)
+    return single_image_response(images, "improved.jpg")
+
+
+@app.post("/process3")
+async def process_bw_endpoint(
+    file: UploadFile = File(..., description="Фото бутылки"),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    _, images = await process_upload(file, crop_padding_ratio, detector_backend)
+    return single_image_response(images, "bw.png")
+
+
+@app.post("/process4")
+async def process_high_contrast_endpoint(
+    file: UploadFile = File(..., description="Фото бутылки"),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    _, images = await process_upload(file, crop_padding_ratio, detector_backend)
+    return single_image_response(images, "high_contrast.jpg")
+
+
+@app.post("/process5")
+async def process_debug_roi_endpoint(
+    file: UploadFile = File(..., description="Фото бутылки"),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    _, images = await process_upload(file, crop_padding_ratio, detector_backend)
+    return single_image_response(images, "debug_roi.jpg")
+
+
+@app.post("/process")
+async def process_endpoint(
+    request: Request,
+    file: UploadFile = File(..., description="Фото бутылки"),
+    response_format: Literal["multipart", "zip", "json_links"] = Query(
+        default="multipart",
+        description="Вернуть multipart с файлами, zip-архив или JSON-массив ссылок на изображения",
+    ),
+    crop_padding_ratio: float = Query(
+        default=0.08,
+        ge=0.0,
+        le=0.25,
+        description="Насколько расширять найденную область даты/маркировки",
+    ),
+    detector_backend: Literal["craft", "heuristic"] = Query(
+        default="craft",
+        description="Какой детектор использовать для поиска даты/кода",
+    ),
+):
+    content, images = await process_upload(file, crop_padding_ratio, detector_backend)
 
     if response_format == "multipart":
         payload, boundary = build_multipart_payload(images)

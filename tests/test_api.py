@@ -178,6 +178,42 @@ class ProcessEndpointTests(unittest.TestCase):
         self.assertEqual(high_contrast.shape[:2], expected.high_contrast.shape[:2])
         self.assertEqual(debug_roi.shape[:2], original.shape[:2])
 
+    def test_single_file_process_endpoints_return_expected_images(self) -> None:
+        content, _ = build_challenging_bottle()
+        expected = process_image(content, detector_backend="craft")
+        body, boundary = build_multipart_body("bottle.jpg", content, "image/jpeg")
+
+        original = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+        self.assertIsNotNone(original)
+        assert original is not None
+
+        expectations = [
+            ("/process1", "image/jpeg", expected.crop_bgr.shape[:2], cv2.IMREAD_COLOR),
+            ("/process2", "image/jpeg", expected.improved_bgr.shape[:2], cv2.IMREAD_COLOR),
+            ("/process3", "image/png", expected.bw.shape[:2], cv2.IMREAD_GRAYSCALE),
+            ("/process4", "image/jpeg", expected.high_contrast.shape[:2], cv2.IMREAD_COLOR),
+            ("/process5", "image/jpeg", original.shape[:2], cv2.IMREAD_COLOR),
+        ]
+
+        for path, media_type, expected_shape, imread_mode in expectations:
+            with self.subTest(path=path):
+                request = urllib.request.Request(
+                    url=f"http://127.0.0.1:{self.http_server.port}{path}?detector_backend=craft",
+                    data=body,
+                    method="POST",
+                    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+                )
+
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    payload = response.read()
+                    content_type = response.headers.get_content_type()
+
+                self.assertEqual(content_type, media_type)
+                image = cv2.imdecode(np.frombuffer(payload, np.uint8), imread_mode)
+                self.assertIsNotNone(image)
+                assert image is not None
+                self.assertEqual(image.shape[:2], expected_shape)
+
     def test_process_returns_json_links_for_dify(self) -> None:
         content, _ = build_challenging_bottle()
         expected = process_image(content, detector_backend="craft")
