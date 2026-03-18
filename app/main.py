@@ -70,6 +70,23 @@ def save_output_images(images: list[tuple[str, str, bytes]]) -> str:
     return batch_id
 
 
+def build_multipart_payload(images: list[tuple[str, str, bytes]]) -> tuple[bytes, str]:
+    boundary = f"bottle-text-service-{uuid.uuid4().hex}"
+    body = io.BytesIO()
+    for filename, media_type, payload in images:
+        body.write(f"--{boundary}\r\n".encode("utf-8"))
+        body.write(
+            (
+                f'Content-Disposition: form-data; name="files"; filename="{filename}"\r\n'
+                f"Content-Type: {media_type}\r\n\r\n"
+            ).encode("utf-8")
+        )
+        body.write(payload)
+        body.write(b"\r\n")
+    body.write(f"--{boundary}--\r\n".encode("utf-8"))
+    return body.getvalue(), boundary
+
+
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 
 
@@ -82,9 +99,9 @@ def health() -> dict:
 async def process_endpoint(
     request: Request,
     file: UploadFile = File(..., description="Фото бутылки"),
-    response_format: Literal["zip", "json_links"] = Query(
-        default="json_links",
-        description="Вернуть zip-архив или JSON-массив ссылок на изображения",
+    response_format: Literal["multipart", "zip", "json_links"] = Query(
+        default="multipart",
+        description="Вернуть multipart с файлами, zip-архив или JSON-массив ссылок на изображения",
     ),
     crop_padding_ratio: float = Query(
         default=0.08,
@@ -118,6 +135,13 @@ async def process_endpoint(
         raise HTTPException(status_code=500, detail=f"Ошибка обработки: {exc}") from exc
 
     images = build_output_images(content, result)
+
+    if response_format == "multipart":
+        payload, boundary = build_multipart_payload(images)
+        return StreamingResponse(
+            io.BytesIO(payload),
+            media_type=f"multipart/form-data; boundary={boundary}",
+        )
 
     if response_format == "json_links":
         batch_id = save_output_images(images)

@@ -7,6 +7,8 @@ import time
 import unittest
 import urllib.request
 import zipfile
+from email import policy
+from email.parser import BytesParser
 from io import BytesIO
 
 import cv2
@@ -100,6 +102,66 @@ class ProcessEndpointTests(unittest.TestCase):
         self.assertIsNotNone(bw)
         self.assertIsNotNone(high_contrast)
         self.assertIsNotNone(debug_roi)
+        assert crop is not None
+        assert improved is not None
+        assert bw is not None
+        assert high_contrast is not None
+        assert debug_roi is not None
+
+        original = cv2.imdecode(np.frombuffer(content, np.uint8), cv2.IMREAD_COLOR)
+        self.assertIsNotNone(original)
+        assert original is not None
+
+        self.assertEqual(crop.shape[:2], expected.crop_bgr.shape[:2])
+        self.assertEqual(improved.shape[:2], expected.improved_bgr.shape[:2])
+        self.assertEqual(bw.shape[:2], expected.bw.shape[:2])
+        self.assertEqual(high_contrast.shape[:2], expected.high_contrast.shape[:2])
+        self.assertEqual(debug_roi.shape[:2], original.shape[:2])
+
+    def test_process_returns_multipart_files_by_default(self) -> None:
+        content, _ = build_challenging_bottle()
+        expected = process_image(content, detector_backend="craft")
+        body, boundary = build_multipart_body("bottle.jpg", content, "image/jpeg")
+
+        request = urllib.request.Request(
+            url=f"http://127.0.0.1:{self.http_server.port}/process?detector_backend=craft",
+            data=body,
+            method="POST",
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+
+        with urllib.request.urlopen(request, timeout=30) as response:
+            payload = response.read()
+            content_type = response.headers.get("Content-Type", "")
+
+        self.assertIn("multipart/form-data", content_type)
+
+        message = BytesParser(policy=policy.default).parsebytes(
+            f"Content-Type: {content_type}\r\nMIME-Version: 1.0\r\n\r\n".encode("utf-8") + payload
+        )
+        parts = list(message.iter_parts())
+
+        self.assertEqual(
+            [part.get_filename() for part in parts],
+            ["crop_preview.jpg", "improved.jpg", "bw.png", "high_contrast.jpg", "debug_roi.jpg"],
+        )
+
+        images = {
+            part.get_filename(): cv2.imdecode(
+                np.frombuffer(part.get_payload(decode=True), np.uint8),
+                cv2.IMREAD_GRAYSCALE if part.get_filename() == "bw.png" else cv2.IMREAD_COLOR,
+            )
+            for part in parts
+        }
+
+        for image in images.values():
+            self.assertIsNotNone(image)
+
+        crop = images["crop_preview.jpg"]
+        improved = images["improved.jpg"]
+        bw = images["bw.png"]
+        high_contrast = images["high_contrast.jpg"]
+        debug_roi = images["debug_roi.jpg"]
         assert crop is not None
         assert improved is not None
         assert bw is not None
